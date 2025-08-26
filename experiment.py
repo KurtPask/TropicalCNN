@@ -414,10 +414,16 @@ class Experiment:
             ).to(self.device)
             prox_optimizer = schedulefree.RAdamScheduleFree(self.prox.parameters(), lr=self.lr)
             conprox_optimizer = schedulefree.RAdamScheduleFree(self.conprox.parameters(), lr=self.lr)
+            # schedulefree optimizers require explicit train/eval mode
+            prox_optimizer.train()
+            conprox_optimizer.train()
             lambda_conprox = 1e-4
 
         if self.at:
             self.model.eval()
+            if self.regularizer != 'none':
+                prox_optimizer.eval()
+                conprox_optimizer.eval()
             print(f'...starting adversarial training loop...{self._time_string()}')
             at_adversary = APGDAttack(self.model, n_iter=10, eps=0.0, verbose=False, device=self.device)
             list_at_params = [('Linf', 4/255), ('L2', 0.5), ('L1', 1.5)]
@@ -430,6 +436,9 @@ class Experiment:
         self._write_to_csv('w', 'training', ["epoch", "total", "running_loss", "epoch_accuracy", "time"])
 
         self.model.train()
+        if self.regularizer != 'none':
+            prox_optimizer.train()
+            conprox_optimizer.train()
         for epoch in range(self.num_epochs):
             running_loss = 0.0
             correct = 0
@@ -438,6 +447,9 @@ class Experiment:
                 if self.at:
                     list_x_advs = []
                     self.model.eval()
+                    if self.regularizer != 'none':
+                        prox_optimizer.eval()
+                        conprox_optimizer.eval()
                     for norm, eps in list_at_params:
                         at_adversary.eps = eps
                         at_adversary.norm = norm
@@ -446,6 +458,9 @@ class Experiment:
                     images = torch.cat(list_x_advs, dim=0)
                     labels = torch.cat([labels for _ in range(len(list_at_params))], dim=0)
                     self.model.train()
+                    if self.regularizer != 'none':
+                        prox_optimizer.train()
+                        conprox_optimizer.train()
                 images, labels = images.to(self.device), labels.to(self.device)
                 optimizer.zero_grad()
                 if self.regularizer != 'none':
