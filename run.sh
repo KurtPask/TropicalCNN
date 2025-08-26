@@ -15,10 +15,10 @@
 module load lang/python/3.13.0
 
 source env_18Feb25/bin/activate
-
+pip install schedulefree
 # Create a timestamp for the output file name.
 timestamp=$(date +%s)
 
 # Run the Python script with the SLURM_ARRAY_TASK_ID as the combo argument.  "$SLURM_ARRAY_TASK_ID"  ${SLURM_ARRAY_TASK_ID}
-python3 $HOME/TropicalCNN/experiment.py --job_file jobs_to_do_1128_19_Mar_2025 --job_id "$SLURM_ARRAY_TASK_ID" > $HOME/TropicalCNN/prints/run_prints/training_check_lenets_${SLURM_ARRAY_TASK_ID}_${timestamp}.txt 2>&1
+python3 $HOME/TropicalCNN/experiment.py --job_file jobs_to_do_2155_25_Aug_2025 --job_id "$SLURM_ARRAY_TASK_ID" --regularizer pcl_l2 > $HOME/TropicalCNN/prints/run_prints/AAA_PCL_BOIS_${SLURM_ARRAY_TASK_ID}_${timestamp}.txt 2>&1
 #python3 $HOME/TropicalCNN/experiment.py --job_file jobs_to_do_0636_17_Mar_2025 --job_id 0 > $HOME/TropicalCNN/prints/run_prints/zzz_attack_cifar100_effnet_0_${timestamp}.txt 2>&1

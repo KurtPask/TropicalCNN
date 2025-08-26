@@ -649,12 +649,12 @@ if __name__ == "__main__":
                     dataset = row[2]
                     model_name = row[3]
                     last_layer_name = row[4]
-                    regularizer = row[5]
-                    at = True if row[6] == 'yes' else False
-                    num_epochs = int(row[7])
-                    batch_size = int(row[8])
-                    normalize_model = row[9]
-                    learning_rate = float(row[10])
+                    #regularizer = row[5]
+                    at = True if row[5] == 'yes' else False
+                    num_epochs = int(row[6])
+                    batch_size = int(row[7])
+                    normalize_model = row[8]
+                    learning_rate = float(row[9])
                     print(row)
 
     if args.regularizer is not None:
