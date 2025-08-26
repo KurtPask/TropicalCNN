@@ -10,6 +10,8 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+import schedulefree
+from pcl_regularizer import Proximity, ConProximity
 from advertorch.attacks import CarliniWagnerL2Attack, LinfSPSAAttack 
 from autoattack import AutoAttack
 from autoattack.autopgd_base import APGDAttack
@@ -140,16 +142,18 @@ class Experiment:
                  dataset,
                  last_layer_type,
                  device,
+                 regularizer='none',
                  num_epochs = 50,
                  lr = 0.001,
                  slice = 0,
                  total_slices = 1,
                  batch_size = 100,
                  normalize_model = 'none'):
-        # -- assertions -- 
+        # -- assertions --
         assert task in ['attack', 'evaluate', 'train']
         assert last_layer_type in ['tropical', 'normal', 'maxout']
         assert type(at) is bool
+        assert regularizer in ['none', 'pcl_l2', 'pcl_tropical']
 
         # -- essentials --
         self.task = task
@@ -161,6 +165,7 @@ class Experiment:
         self.split = 'train' if self.task == 'train' else 'test'
         self.last_layer_type = last_layer_type
         self.normalize_model = normalize_model
+        self.regularizer = regularizer
         
         # -- data --
         dict_num_classes = {"cifar100":100, "cifar10":10, "svhn":10, 'mnist':10}
@@ -174,9 +179,11 @@ class Experiment:
         # -- tracking --
         self.device = device
         self.init_time = self._time_string()
-        self.base_pattern = f"{self.at}_{self.dataset}_{self.model_name}_{self.last_layer_type}_"  
+        self.base_pattern = f"{self.at}_{self.dataset}_{self.model_name}_{self.last_layer_type}_{self.regularizer}_"
         self.full_file_name =  f"{self.base_pattern}{self.lr}_{self.num_epochs}_{self.init_time}"
         print(self.full_file_name)
+        self.cached_last_layer_input = None
+        self.hook_handle = None
 
     def run(self):
         self.set_dataloader()
@@ -257,7 +264,13 @@ class Experiment:
                 self.num_ftrs = self.model.base_model.heads[-1].in_features
                 self._set_last_layer()
                 self.model.base_model.heads[-1] = self.last_layer
-    
+
+        if self.regularizer != 'none' and self.hook_handle is None:
+            self.hook_handle = self.last_layer.register_forward_hook(self._cache_last_layer_input)
+
+    def _cache_last_layer_input(self, module, inputs, output):
+        self.cached_last_layer_input = inputs[0]
+
     def set_model(self):
         print(f'...setting model object...{self._time_string()}')
         self._set_base_model()
@@ -382,11 +395,27 @@ class Experiment:
 
     def train_model(self):
         criterion = nn.CrossEntropyLoss()
-        #lr_input = self.lr*2 if self.dataset == 'cifar100' and self.last_layer_type == 'tropical' else self.lr
-        #print('earning rate', lr_input)
         optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.model.to(self.device)
-        
+
+        if self.regularizer != 'none':
+            metric = 'l2' if self.regularizer == 'pcl_l2' else 'tropical'
+            self.prox = Proximity(
+                self.device,
+                num_classes=self.num_classes,
+                feat_dim=self.num_ftrs,
+                distance_metric=metric,
+            ).to(self.device)
+            self.conprox = ConProximity(
+                self.device,
+                num_classes=self.num_classes,
+                feat_dim=self.num_ftrs,
+                distance_metric=metric,
+            ).to(self.device)
+            prox_optimizer = schedulefree.RAdamScheduleFree(self.prox.parameters(), lr=self.lr)
+            conprox_optimizer = schedulefree.RAdamScheduleFree(self.conprox.parameters(), lr=self.lr)
+            lambda_conprox = 1e-4
+
         if self.at:
             self.model.eval()
             print(f'...starting adversarial training loop...{self._time_string()}')
@@ -409,7 +438,7 @@ class Experiment:
                 if self.at:
                     list_x_advs = []
                     self.model.eval()
-                    for norm, eps in list_at_params:  
+                    for norm, eps in list_at_params:
                         at_adversary.eps = eps
                         at_adversary.norm = norm
                         x_adv = at_adversary.perturb(images, labels)
@@ -419,10 +448,23 @@ class Experiment:
                     self.model.train()
                 images, labels = images.to(self.device), labels.to(self.device)
                 optimizer.zero_grad()
+                if self.regularizer != 'none':
+                    prox_optimizer.zero_grad()
+                    conprox_optimizer.zero_grad()
                 outputs = self.model(images)
-                loss = criterion(outputs, labels)
+                if self.regularizer != 'none':
+                    feats = self.cached_last_layer_input
+                    ce_loss = criterion(outputs, labels)
+                    prox_loss = self.prox(feats, labels)
+                    conprox_loss = self.conprox(feats, labels)
+                    loss = ce_loss + prox_loss - lambda_conprox * conprox_loss
+                else:
+                    loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
+                if self.regularizer != 'none':
+                    prox_optimizer.step()
+                    conprox_optimizer.step()
                 running_loss += loss.item()
                 predicted = torch.max(outputs, 1).indices
                 total += labels.size(0)
@@ -579,8 +621,10 @@ if __name__ == "__main__":
     parser.add_argument("--job_id", type=int, default=0, help="job_id index to select model, dataset, and layer type")
     parser.add_argument("--slice", type=int, default=0, help="batch index")
     parser.add_argument("--total_slices", type=int, default=1, help="number_batches")
+    parser.add_argument("--regularizer", type=str, choices=['none', 'pcl_l2', 'pcl_tropical'], default=None,
+                        help="regularizer to apply")
     args = parser.parse_args()
-    
+
     with open(f'{args.job_file}.csv', 'r') as file:
         csv_reader = csv.reader(file)
         for row in csv_reader:
@@ -590,12 +634,16 @@ if __name__ == "__main__":
                     dataset = row[2]
                     model_name = row[3]
                     last_layer_name = row[4]
-                    at = True if row[5] == 'yes' else False
-                    num_epochs = int(row[6])
-                    batch_size = int(row[7])
-                    normalize_model = row[8]
-                    learning_rate = float(row[9])
+                    regularizer = row[5]
+                    at = True if row[6] == 'yes' else False
+                    num_epochs = int(row[7])
+                    batch_size = int(row[8])
+                    normalize_model = row[9]
+                    learning_rate = float(row[10])
                     print(row)
+
+    if args.regularizer is not None:
+        regularizer = args.regularizer
 
     experiment = Experiment(task,
                  at,
@@ -603,6 +651,7 @@ if __name__ == "__main__":
                  dataset,
                  last_layer_name,
                  torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                 regularizer=regularizer,
                  num_epochs = num_epochs,
                  lr = learning_rate,
                  slice = args.slice,

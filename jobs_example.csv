@@ -1,0 +1,2 @@
+job_id,task,dataset,model_name,last_layer_name,regularizer,at,num_epochs,batch_size,normalize_model,learning_rate
+0,train,mnist,lenet5,normal,pcl_l2,no,1,16,none,0.001
